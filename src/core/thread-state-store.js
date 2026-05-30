@@ -53,9 +53,9 @@ class ThreadStateStore {
         next.turnId = event.payload.turnId || next.turnId;
         next.lastReplyText = event.payload.text || next.lastReplyText;
         break;
-      case "runtime.approval.requested":
+      case "runtime.approval.requested": {
         next.status = "waiting_approval";
-        next.pendingApproval = {
+        const approvalEntry = {
           kind: event.payload.kind || "command",
           requestId: event.payload.requestId ?? null,
           reason: event.payload.reason || "",
@@ -66,17 +66,23 @@ class ThreadStateStore {
           elicitation: event.payload.elicitation || null,
           responseTemplate: event.payload.responseTemplate || null,
         };
+        const existingQueue = Array.isArray(current.pendingApprovals) ? current.pendingApprovals : [];
+        if (existingQueue.some((entry) => entry.requestId === approvalEntry.requestId)) {
+          break;
+        }
+        next.pendingApprovals = [...existingQueue, approvalEntry];
         break;
+      }
       case "runtime.turn.completed":
         next.status = "idle";
         next.turnId = event.payload.turnId || next.turnId;
-        next.pendingApproval = null;
+        next.pendingApprovals = [];
         break;
       case "runtime.turn.failed":
         next.status = "failed";
         next.turnId = event.payload.turnId || next.turnId;
         next.lastError = event.payload.text || "❌ Execution failed";
-        next.pendingApproval = null;
+        next.pendingApprovals = [];
         break;
       default:
         break;
@@ -89,15 +95,20 @@ class ThreadStateStore {
     return this.stateByThreadId.get(threadId) || null;
   }
 
-  resolveApproval(threadId, status = "running") {
+  resolveApproval(threadId, status = "running", requestId = "") {
     const current = this.stateByThreadId.get(threadId);
     if (!current) {
       return null;
     }
+    const pendingApprovals = Array.isArray(current.pendingApprovals) ? current.pendingApprovals : [];
+    const remaining = requestId
+      ? pendingApprovals.filter((entry) => entry.requestId !== requestId)
+      : [];
+    const nextStatus = remaining.length > 0 ? "waiting_approval" : status;
     const next = {
       ...current,
-      status,
-      pendingApproval: null,
+      status: nextStatus,
+      pendingApprovals: remaining,
       updatedAt: new Date().toISOString(),
     };
     this.stateByThreadId.set(threadId, next);
@@ -126,7 +137,7 @@ function createEmptyThreadState(threadId) {
     lastReplyText: "",
     lastError: "",
     context: null,
-    pendingApproval: null,
+    pendingApprovals: [],
     updatedAt: new Date().toISOString(),
   };
 }

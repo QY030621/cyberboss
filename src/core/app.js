@@ -417,7 +417,7 @@ class CyberbossApp {
     }
     const threadId = this.runtimeAdapter.getSessionStore().getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
-    return threadState?.status === "running" || hasRpcId(threadState?.pendingApproval?.requestId);
+    return threadState?.status === "running" || (Array.isArray(threadState?.pendingApprovals) && threadState.pendingApprovals.length > 0);
   }
 
   async dispatchPreparedTurn({ bindingKey, workspaceRoot, prepared }) {
@@ -1463,7 +1463,7 @@ class CyberbossApp {
     const workspaceRoot = this.resolveWorkspaceRoot(bindingKey);
     const threadId = this.runtimeAdapter.getSessionStore().getThreadIdForWorkspace(bindingKey, workspaceRoot);
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
-    const approval = threadState?.pendingApproval || null;
+    const approval = (Array.isArray(threadState?.pendingApprovals) ? threadState.pendingApprovals[0] : null) || null;
   if (!threadId || approval?.requestId == null || String(approval.requestId).trim() === "") {
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
@@ -1502,13 +1502,21 @@ class CyberbossApp {
     if (command.name === "always" && approvalResponse.decision === "accept") {
       this.runtimeAdapter.getSessionStore().rememberApprovalPrefixForWorkspace(workspaceRoot, approval.commandTokens);
     }
-    this.threadStateStore.resolveApproval(threadId, "running");
+    this.threadStateStore.resolveApproval(threadId, "running", approval.requestId);
     const text = buildApprovalResponseText(approval, command.name, approvalResponse);
-    await this.channelAdapter.sendText({
-      userId: normalized.senderId,
-      text,
-      contextToken: normalized.contextToken,
-    });
+    if ((this.threadStateStore.getThreadState(threadId)?.pendingApprovals || []).length > 0) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `${text}\n\n💡 There is another pending approval request — reply with /yes or /no.`,
+        contextToken: normalized.contextToken,
+      });
+    } else {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text,
+        contextToken: normalized.contextToken,
+      });
+    }
   }
 
   async handleModelCommand(normalized, command) {
@@ -1706,7 +1714,7 @@ class CyberbossApp {
       return;
     }
     await this.runtimeAdapter.respondApproval(approvalResponse).catch(() => {});
-    this.threadStateStore.resolveApproval(event.payload.threadId, "running");
+    this.threadStateStore.resolveApproval(event.payload.threadId, "running", event.payload.requestId);
   }
 
   async stopTypingForThread(threadId) {
@@ -2077,7 +2085,7 @@ function isPathWithinAllowedDirectories(rawPath) {
   const allowedDirs = [
     os.homedir(),
     process.cwd(),
-    this?.config?.workspaceRoot,
+    process.env.CYBERBOSS_WORKSPACE_ROOT,
   ]
     .filter(Boolean)
     .map((dir) => path.resolve(dir).replace(/\\/g, "/") + "/");
