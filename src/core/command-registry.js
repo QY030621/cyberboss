@@ -246,6 +246,20 @@ const COMMAND_GROUPS = [
         status: "active",
       },
       {
+        action: "memory.search",
+        summary: "Search memory by keyword: /memory search <关键词>",
+        terminal: [],
+        weixin: ["/memory search <关键词>"],
+        status: "active",
+      },
+      {
+        action: "memory.manage",
+        summary: "Manage memory: /memory show|forget|pending|approve|reject|undo|prune",
+        terminal: [],
+        weixin: ["/memory show|forget|pending|approve|reject|undo|prune"],
+        status: "active",
+      },
+      {
         action: "app.help",
         summary: "Show currently available commands for this channel",
         terminal: ["help"],

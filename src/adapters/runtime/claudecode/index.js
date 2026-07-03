@@ -13,11 +13,12 @@ function createClaudeCodeRuntimeAdapter(config) {
   const clientsByWorkspace = new Map();
   const pendingApprovals = new Map();
   let globalListener = null;
-  const ipcSocketPath = path.join(
-    config.stateDir || path.join(os.homedir(), ".cyberboss"),
-    "claudecode-runtime.sock",
-  );
-  const ipcServer = new ClaudeCodeIpcServer({ socketPath: ipcSocketPath });
+  const stateDir = config.stateDir || path.join(os.homedir(), ".cyberboss");
+  const isWindows = process.platform === "win32";
+  const ipcSocketPath = isWindows
+    ? "\\\\.\\pipe\\cyberboss-claudecode-runtime"
+    : path.join(stateDir, "claudecode-runtime.sock");
+  const ipcServer = new ClaudeCodeIpcServer({ socketPath: ipcSocketPath, tokenDir: stateDir });
 
   ipcServer.on("clientMessage", (msg) => {
     if (msg?.type === "sendUserMessage" && msg?.workspaceRoot) {
@@ -88,7 +89,9 @@ function createClaudeCodeRuntimeAdapter(config) {
         pendingApprovals.set(mapped.payload.requestId, workspaceRoot);
       }
       if (mapped?.type === "runtime.turn.failed") {
-        clientsByWorkspace.delete(workspaceRoot);
+        closeWorkspaceClient(workspaceRoot).catch((err) => {
+          console.error(`[claudecode-runtime] failed to close client after turn failure: ${err.message}`);
+        });
       }
       if (mapped && globalListener) {
         globalListener(mapped, raw);

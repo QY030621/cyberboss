@@ -79,6 +79,8 @@ function normalizeDateFolder(receivedAt) {
   return date.toISOString().slice(0, 10);
 }
 
+const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 60_000;
+
 async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
   const candidates = buildDownloadCandidates(attachment, cdnBaseUrl);
   if (!candidates.length) {
@@ -87,13 +89,17 @@ async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
 
   let lastError = null;
   for (const candidate of candidates) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
     try {
       const response = await fetch(candidate, {
         method: "GET",
         headers: {
           Accept: "*/*",
         },
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       if (!response.ok) {
         lastError = new Error(`download failed with HTTP ${response.status}`);
         continue;
@@ -105,6 +111,7 @@ async function downloadAttachmentPayload(attachment, cdnBaseUrl) {
         contentType: normalizeContentType(response.headers.get("content-type")),
       };
     } catch (error) {
+      clearTimeout(timer);
       lastError = error;
     }
   }

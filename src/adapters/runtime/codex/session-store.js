@@ -335,6 +335,12 @@ class SessionStore {
     this.save();
   }
 
+  listApprovalPromptThreadIds() {
+    const map = this.state.approvalPromptStateByThreadId;
+    if (!map || typeof map !== "object") return [];
+    return Object.keys(map);
+  }
+
   getAvailableModelCatalog() {
     const raw = this.state.availableModelCatalog;
     if (!raw || typeof raw !== "object") {

@@ -65,7 +65,7 @@ class ClaudeCodeProcessClient {
       cwd: this.cwd,
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
+      shell: true,
     });
     this.child = child;
     this.stdin = child.stdin;

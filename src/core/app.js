@@ -23,6 +23,9 @@ const { SystemMessageQueueStore } = require("./system-message-queue-store");
 const { SystemMessageDispatcher } = require("./system-message-dispatcher");
 const { TimelineScreenshotQueueStore } = require("./timeline-screenshot-queue-store");
 const { TurnGateStore } = require("./turn-gate-store");
+const { ConversationStore } = require("./conversation-store");
+const { AutoDigest } = require("./auto-digest");
+const { startConversationServer } = require("../services/conversation-server");
 const { ReminderQueueStore } = require("../adapters/channel/weixin/reminder-queue-store");
 const {
   matchesCommandPrefix,
@@ -34,6 +37,9 @@ const {
 } = require("../adapters/runtime/shared/approval-command");
 const { runSystemCheckinPoller } = require("../app/system-checkin-poller");
 const { createProjectTooling } = require("../tools/create-project-tooling");
+const { classifyIntent, resolveMemoryContext } = require("./memory-classifier");
+const { routeMemoryCommand } = require("./memory-command-router");
+const { addToMiningBuffer, getMiningWindow, shouldRunBatchMining, extractCandidatesFromWindow, writeCandidatesWithConflictCheck, markMiningComplete } = require("./memory-miner");
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MIN_LONG_POLL_TIMEOUT_MS = 2_000;
 const SESSION_EXPIRED_ERRCODE = -14;
@@ -65,13 +71,20 @@ class CyberbossApp {
     this.projectToolHost = projectTooling.toolHost;
     this.runtimeContextStore = projectTooling.runtimeContextStore;
     this.runtimeAdapter = createRuntimeAdapter(config);
-    this.threadStateStore = new ThreadStateStore();
+    this.threadStateStore = new ThreadStateStore({ filePath: config.threadStateFile || "" });
     this.systemMessageQueue = new SystemMessageQueueStore({ filePath: config.systemMessageQueueFile });
     this.deferredSystemReplyQueue = new DeferredSystemReplyStore({ filePath: config.deferredSystemReplyQueueFile });
     this.checkinConfigStore = new CheckinConfigStore({ filePath: config.checkinConfigFile });
     this.timelineScreenshotQueue = new TimelineScreenshotQueueStore({ filePath: config.timelineScreenshotQueueFile });
     this.reminderQueue = new ReminderQueueStore({ filePath: config.reminderQueueFile });
     this.turnGateStore = new TurnGateStore();
+    this.conversationStore = new ConversationStore({ dirPath: config.conversationsDir });
+    this.autoDigest = new AutoDigest({
+      stateDir: config.stateDir,
+      conversationStore: this.conversationStore,
+      enqueueSystemMessage: (text) => this._enqueueAutoDigestSystemMessage(text),
+    });
+    this.conversationServer = null;
     this.pendingInboundByScope = new Map();
     this.pendingImageInboundByScope = new Map();
     this.turnBoundaryScopeKeys = new Set();
@@ -80,6 +93,7 @@ class CyberbossApp {
       channelAdapter: this.channelAdapter,
       sessionStore: this.runtimeAdapter.getSessionStore(),
       onDeferredSystemReply: (payload) => this.deferSystemReply(payload),
+      onMessageSent: (text) => this.conversationStore.append({ from: "yanyan", text }),
     });
     this.pendingRuntimeEventWatchdogs = new Map();
     this.pendingOperationByRunKey = new Map();
@@ -142,7 +156,9 @@ class CyberbossApp {
     if (this.config.startWithLocationServer) {
       await this.ensureLocationServerStarted();
     }
+    this.ensureConversationServerStarted();
     console.log("[cyberboss] bridge loop started; waiting for WeChat messages.");
+    this.cleanupOrphanApprovalPrompts();
     if (this.config.startWithCheckin) {
       console.log("[cyberboss] checkin: enabled");
       void runSystemCheckinPoller(this.config).catch((error) => {
@@ -153,6 +169,7 @@ class CyberbossApp {
     const shutdown = createShutdownController(async () => {
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
+      await this.closeConversationServer();
       await this.runtimeAdapter.close();
     });
 
@@ -203,6 +220,7 @@ class CyberbossApp {
       shutdown.dispose();
       this.clearPendingImageInboundTimers();
       await this.closeLocationServer();
+      await this.closeConversationServer();
       await this.runtimeAdapter.close();
     }
   }
@@ -225,6 +243,25 @@ class CyberbossApp {
       return;
     }
     await this.projectServices.whereabouts.closeServer();
+  }
+
+  ensureConversationServerStarted() {
+    const port = this.config.conversationServerPort || 4319;
+    const host = this.config.conversationServerHost || "127.0.0.1";
+    startConversationServer({ store: this.conversationStore, port, host })
+      .then((server) => { this.conversationServer = server; })
+      .catch((error) => {
+        console.error(`[conversation-server] failed to start: ${error.message}`);
+      });
+  }
+
+  async closeConversationServer() {
+    if (!this.conversationServer) return;
+    await new Promise((resolve) => {
+      this.conversationServer.close(() => resolve());
+      setTimeout(resolve, 2000);
+    });
+    this.conversationServer = null;
   }
 
   handleLocationAccepted(result) {
@@ -321,6 +358,17 @@ class CyberbossApp {
     const normalized = this.channelAdapter.normalizeIncomingMessage(message);
     if (!normalized) {
       return;
+    }
+
+    // Record incoming message
+    if (normalized.text) {
+      this.conversationStore.append({
+        from: "rey",
+        text: normalized.text,
+        time: normalized.receivedAt,
+        attachments: Array.isArray(normalized.attachments) ? normalized.attachments : [],
+      });
+      this.autoDigest.recordTurn(normalized.text);
     }
 
     this.primeDeferredRepliesForSender(normalized);
@@ -440,6 +488,7 @@ class CyberbossApp {
           senderId: prepared.senderId,
         },
       });
+      addToMiningBuffer(prepared.originalText || prepared.text || "");
       this.runtimeContextStore?.setActiveContext?.({
         workspaceRoot,
         runtimeId: this.runtimeAdapter.describe().id,
@@ -734,12 +783,20 @@ class CyberbossApp {
     const blocks = queued
       .map((message) => String(message.text || "").trim())
       .filter(Boolean);
+    const allAttachments = queued.flatMap(
+      (message) => Array.isArray(message.attachments) ? message.attachments : []
+    );
+    const allAttachmentFailures = queued.flatMap(
+      (message) => Array.isArray(message.attachmentFailures) ? message.attachmentFailures : []
+    );
 
     return {
       prepared: {
         bindingKey: draft.bindingKey,
         workspaceRoot: draft.workspaceRoot,
         ...latest,
+        attachments: allAttachments,
+        attachmentFailures: allAttachmentFailures,
         text: [
           "Multiple newer WeChat messages arrived while you were still handling the previous turn.",
           "Treat the following blocks as one ordered batch of fresh user input and respond once after considering all of them.",
@@ -868,12 +925,14 @@ class CyberbossApp {
 
     const attachments = Array.isArray(normalized.attachments) ? normalized.attachments : [];
     if (!attachments.length) {
+      const inboundText = buildInboundText(normalized, { saved: [], failed: [] }, this.config, {
+        runtimeId: this.runtimeAdapter?.describe?.().id || "",
+      });
+      const memoryCtx = this.buildMemoryContext(normalized);
       return {
         ...normalized,
         originalText: normalized.text,
-        text: buildInboundText(normalized, { saved: [], failed: [] }, this.config, {
-          runtimeId: this.runtimeAdapter?.describe?.().id || "",
-        }),
+        text: memoryCtx ? `${memoryCtx}\n\n${inboundText}` : inboundText,
         attachments: [],
         attachmentFailures: [],
       };
@@ -910,10 +969,11 @@ class CyberbossApp {
       return null;
     }
 
+    const memoryCtx = this.buildMemoryContext(normalized);
     return {
       ...normalized,
       originalText: normalized.text,
-      text: codexInboundText,
+      text: memoryCtx ? `${memoryCtx}\n\n${codexInboundText}` : codexInboundText,
       attachments: persisted.saved,
       attachmentFailures: persisted.failed,
     };
@@ -1024,6 +1084,32 @@ class CyberbossApp {
     return this.runtimeAdapter.getSessionStore().getActiveWorkspaceRoot(bindingKey) || this.config.workspaceRoot;
   }
 
+  _enqueueAutoDigestSystemMessage(text) {
+    if (!text || !this.activeAccountId || !this.systemMessageQueue) return;
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    const senderId = resolvePreferredSenderId({
+      config: this.config,
+      accountId: this.activeAccountId,
+      sessionStore,
+    });
+    const workspaceRoot = resolvePreferredWorkspaceRoot({
+      config: this.config,
+      accountId: this.activeAccountId,
+      senderId,
+      sessionStore,
+    });
+    if (!senderId || !workspaceRoot) return;
+    this.systemMessageQueue.enqueue({
+      id: `autodigest:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      accountId: this.activeAccountId,
+      senderId,
+      workspaceRoot,
+      text,
+      createdAt: new Date().toISOString(),
+    });
+    console.log(`[autodigest] system message enqueued sender=${senderId}`);
+  }
+
   async dispatchSystemMessage(message) {
     const prepared = this.systemMessageDispatcher?.buildPreparedMessage(message, this.channelAdapter.getKnownContextTokens()[message.senderId] || "");
     if (!prepared) {
@@ -1083,6 +1169,9 @@ class CyberbossApp {
         return;
       case "help":
         await this.handleHelpCommand(normalized);
+        return;
+      case "memory":
+        await this.handleMemoryCommand(normalized, command);
         return;
       default:
         await this.channelAdapter.sendText({
@@ -1465,6 +1554,16 @@ class CyberbossApp {
     const threadState = threadId ? this.threadStateStore.getThreadState(threadId) : null;
     const approval = (Array.isArray(threadState?.pendingApprovals) ? threadState.pendingApprovals[0] : null) || null;
   if (!threadId || approval?.requestId == null || String(approval.requestId).trim() === "") {
+    // Clean up orphan approval prompt state that may have survived a restart
+    if (threadId) {
+      const promptState = this.runtimeAdapter.getSessionStore().getApprovalPromptState(threadId);
+      if (promptState) {
+        console.warn(
+          `[cyberboss] orphan approval prompt state cleared thread=${threadId} requestId=${promptState.requestId || ""}`
+        );
+        this.runtimeAdapter.getSessionStore().clearApprovalPrompt(threadId);
+      }
+    }
     await this.channelAdapter.sendText({
       userId: normalized.senderId,
       text: "💡 There is no pending approval request right now.",
@@ -1516,6 +1615,28 @@ class CyberbossApp {
         text,
         contextToken: normalized.contextToken,
       });
+    }
+  }
+
+  cleanupOrphanApprovalPrompts() {
+    const sessionStore = this.runtimeAdapter.getSessionStore();
+    if (typeof sessionStore.listApprovalPromptThreadIds !== "function") return;
+    const threadIds = sessionStore.listApprovalPromptThreadIds();
+    if (!Array.isArray(threadIds) || !threadIds.length) return;
+    let cleaned = 0;
+    for (const threadId of threadIds) {
+      const threadState = this.threadStateStore.getThreadState(threadId);
+      const hasPending = Array.isArray(threadState?.pendingApprovals) && threadState.pendingApprovals.length > 0;
+      if (!hasPending) {
+        console.warn(
+          `[cyberboss] startup orphan cleanup thread=${threadId}`
+        );
+        sessionStore.clearApprovalPrompt(threadId);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      console.warn(`[cyberboss] cleaned ${cleaned} orphan approval prompt(s) on startup`);
     }
   }
 
@@ -1598,6 +1719,71 @@ class CyberbossApp {
     });
   }
 
+  buildMemoryContext(normalized) {
+    try {
+      const text = typeof normalized?.originalText === "string" ? normalized.originalText : "";
+      if (!text) return "";
+      const { slots, categories } = classifyIntent(text);
+      if (!slots.length && !categories.length) return "";
+      const context = resolveMemoryContext(slots);
+      if (!context) return "";
+      return [
+        "——后台记忆：回答时请参考以下已知信息——",
+        context,
+        "——后台记忆结束——",
+      ].join("\n");
+    } catch (error) {
+      console.error(`[cyberboss] memory context failed: ${error.message}`);
+      return "";
+    }
+  }
+
+  async handleMemoryCommand(normalized, command) {
+    const cmdText = `/memory ${normalizeCommandArgument(command.args)}`;
+    try {
+      const reply = routeMemoryCommand(cmdText);
+      if (!reply) {
+        await this.channelAdapter.sendText({
+          userId: normalized.senderId,
+          text: "💡 Usage: /memory search <关键词> | show <分类> | forget <key> | pending | approve <id> | reject <id> | undo | prune <分类>",
+          contextToken: normalized.contextToken,
+        });
+        return;
+      }
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: reply,
+        contextToken: normalized.contextToken,
+      });
+    } catch (error) {
+      await this.channelAdapter.sendText({
+        userId: normalized.senderId,
+        text: `❌ Memory command failed\n${error.message}`,
+        contextToken: normalized.contextToken,
+      }).catch(() => {});
+    }
+  }
+
+  async runPostResponseMining() {
+    try {
+      if (!shouldRunBatchMining()) return;
+      const window = getMiningWindow();
+      if (!window || window.length === 0) return;
+      const candidates = extractCandidatesFromWindow(window);
+      if (!candidates.length) {
+        markMiningComplete();
+        return;
+      }
+      const written = writeCandidatesWithConflictCheck(candidates);
+      markMiningComplete();
+      if (written.length) {
+        console.log(`[cyberboss] memory mined ${written.length} candidates`);
+      }
+    } catch (error) {
+      console.error(`[cyberboss] post-response mining failed: ${error.message}`);
+    }
+  }
+
   resolveWorkspaceRoot(bindingKey) {
     const sessionStore = this.runtimeAdapter.getSessionStore();
     return sessionStore.getActiveWorkspaceRoot(bindingKey) || this.config.workspaceRoot;
@@ -1670,6 +1856,9 @@ class CyberbossApp {
           this.turnBoundaryScopeKeys.delete(scopeKey);
         }
       }
+      void this.runPostResponseMining().catch((error) => {
+        console.error(`[cyberboss] post-response mining unexpected error: ${error.message}`);
+      });
       return;
     }
     if (event.type !== "runtime.approval.requested") {
@@ -2328,11 +2517,12 @@ function buildInboundText(normalized, persisted = {}, config = {}, options = {})
     lines.push(`Read them before replying to ${userName}.`);
     if (saved.some((item) => isImageAttachmentItem(item))) {
       if (runtimeUsesReadForImages(runtimeId)) {
-        lines.push("Read every image first with `Read`.");
+        lines.push("DO NOT use Read on images—your model can't see. For each image, copy its path exactly from above and run:");
+        lines.push('  node scripts/vision.js "<paste file path here>" "用中文描述这张图片"');
       } else {
         lines.push("Read every image first with `view_image`.");
       }
-      lines.push("Say nothing before reading.");
+      lines.push("Describe what you see before replying.");
       lines.push(`If some images are reusable stickers, load \`cyberboss_sticker_tags\` only when needed. ${STICKER_TAG_GUIDANCE}`);
       lines.push(`After reading the whole batch, call \`cyberboss_sticker_save_from_inbox\` once with an \`items\` array. Use 1-3 tags. ${STICKER_DESC_GUIDANCE} Skip ordinary photos, screenshots, and unclear images.`);
       lines.push("Do not describe save steps. The system sends the sticker notice.");

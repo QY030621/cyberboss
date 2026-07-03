@@ -5,10 +5,11 @@ const crypto = require("crypto");
 const { EventEmitter } = require("events");
 
 class ClaudeCodeIpcServer extends EventEmitter {
-  constructor({ socketPath }) {
+  constructor({ socketPath, tokenDir }) {
     super();
     this.socketPath = socketPath;
-    this.tokenFile = `${socketPath}.token`;
+    this.tokenFile = path.join(tokenDir, "claudecode-runtime.sock.token");
+    this.isWindowsPipe = process.platform === "win32";
     this.authToken = "";
     this.server = null;
     this.clients = new Set();
@@ -17,8 +18,10 @@ class ClaudeCodeIpcServer extends EventEmitter {
 
   start() {
     if (this.server) return;
-    this.ensureDirectory();
-    this.removeStaleSocket();
+    if (!this.isWindowsPipe) {
+      this.ensureDirectory();
+      this.removeStaleSocket();
+    }
     this.generateAuthToken();
 
     this.server = net.createServer((socket) => {
@@ -61,7 +64,9 @@ class ClaudeCodeIpcServer extends EventEmitter {
     });
 
     this.server.listen(this.socketPath, () => {
-      fs.chmodSync(this.socketPath, 0o600);
+      if (!this.isWindowsPipe) {
+        fs.chmodSync(this.socketPath, 0o600);
+      }
     });
   }
 

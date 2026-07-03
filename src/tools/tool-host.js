@@ -555,6 +555,20 @@ function createExtraToolHosts(services = {}) {
   if (services.whereabouts) {
     hosts.push(new WhereaboutsToolHost({ service: services.whereabouts }));
   }
+  // XHS / CDP browser tools — connect to a Chrome/Edge instance with --remote-debugging-port=9222
+  try {
+    const { XhsToolHost } = require("./xhs-tool-host");
+    hosts.push(new XhsToolHost());
+  } catch (_) {
+    // xhs-tool-host not available (e.g. chrome-remote-interface not installed)
+  }
+  // Memory tools — always available
+  try {
+    const { MemoryToolHost } = require("./memory-tool-host");
+    hosts.push(new MemoryToolHost());
+  } catch (_) {
+    // memory-tool-host not available
+  }
   return hosts;
 }
 

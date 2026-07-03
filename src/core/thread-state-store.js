@@ -1,7 +1,73 @@
+const fs = require("fs");
+const path = require("path");
+
 class ThreadStateStore {
-  constructor() {
+  constructor({ filePath = "" } = {}) {
     this.stateByThreadId = new Map();
     this.latestContextByRuntime = new Map();
+    this.filePath = typeof filePath === "string" ? filePath.trim() : "";
+    this._load();
+  }
+
+  _save() {
+    if (!this.filePath) return;
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const payload = {
+        updatedAt: new Date().toISOString(),
+        threads: Array.from(this.stateByThreadId.entries()).map(([id, state]) => [
+          id,
+          {
+            threadId: state.threadId,
+            turnId: state.turnId,
+            status: state.status,
+            lastReplyText: state.lastReplyText,
+            lastError: state.lastError,
+            pendingApprovals: state.pendingApprovals,
+            updatedAt: state.updatedAt,
+          },
+        ]),
+      };
+      const tmp = this.filePath + ".tmp";
+      fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
+      fs.renameSync(tmp, this.filePath);
+    } catch (_err) {
+      // best-effort persistence
+    }
+  }
+
+  _load() {
+    if (!this.filePath) return;
+    try {
+      if (!fs.existsSync(this.filePath)) return;
+      const raw = fs.readFileSync(this.filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const threads = Array.isArray(parsed?.threads) ? parsed.threads : [];
+      for (const [id, state] of threads) {
+        if (!id || !state) continue;
+        this.stateByThreadId.set(id, {
+          threadId: state.threadId || id,
+          turnId: state.turnId || "",
+          status: normalizePersistedStatus(state.status),
+          lastReplyText: state.lastReplyText || "",
+          lastError: state.lastError || "",
+          context: null,
+          pendingApprovals: Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [],
+          updatedAt: state.updatedAt || new Date().toISOString(),
+        });
+      }
+    } catch (_err) {
+      // best-effort — start with empty state on corruption
+    }
+  }
+
+  _maybeSave() {
+    if (this.filePath) {
+      setImmediate(() => this._save());
+    }
   }
 
   applyRuntimeEvent(event) {
@@ -70,7 +136,12 @@ class ThreadStateStore {
         if (existingQueue.some((entry) => entry.requestId === approvalEntry.requestId)) {
           break;
         }
-        next.pendingApprovals = [...existingQueue, approvalEntry];
+        // Replace stale entries with the same command but different requestId
+        // (claude code was respawned and assigned new requestIds)
+        const freshQueue = existingQueue.filter(
+          (entry) => entry.kind !== approvalEntry.kind || entry.command !== approvalEntry.command
+        );
+        next.pendingApprovals = [...freshQueue, approvalEntry];
         break;
       }
       case "runtime.turn.completed":
@@ -89,6 +160,15 @@ class ThreadStateStore {
     }
 
     this.stateByThreadId.set(threadId, next);
+    // Only persist on meaningful state transitions (skip reply.delta — fires per token)
+    if (
+      event.type === "runtime.approval.requested" ||
+      event.type === "runtime.turn.started" ||
+      event.type === "runtime.turn.completed" ||
+      event.type === "runtime.turn.failed"
+    ) {
+      this._maybeSave();
+    }
   }
 
   getThreadState(threadId) {
@@ -112,6 +192,7 @@ class ThreadStateStore {
       updatedAt: new Date().toISOString(),
     };
     this.stateByThreadId.set(threadId, next);
+    this._maybeSave();
     return next;
   }
 
@@ -148,6 +229,11 @@ function normalizeRuntimeId(value) {
 
 function normalizeThreadId(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizePersistedStatus(status) {
+  const allowed = new Set(["idle", "running", "waiting_approval", "failed"]);
+  return allowed.has(status) ? status : "idle";
 }
 
 module.exports = { ThreadStateStore };

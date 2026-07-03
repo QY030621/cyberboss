@@ -1,12 +1,14 @@
 const { sanitizeProtocolLeakText } = require("../adapters/runtime/codex/protocol-leak-monitor");
+const { validateDraftAgainstMemory } = require("./memory-validator");
 
 const CURRENT_REPLY_HEADER = "===== 本轮模型回复 =====";
 
 class StreamDelivery {
-  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs }) {
+  constructor({ channelAdapter, sessionStore, onDeferredSystemReply, systemReplyRetryScheduleMs, sameTokenRetryDelayMs, onMessageSent }) {
     this.channelAdapter = channelAdapter;
     this.sessionStore = sessionStore;
     this.onDeferredSystemReply = typeof onDeferredSystemReply === "function" ? onDeferredSystemReply : null;
+    this.onMessageSent = typeof onMessageSent === "function" ? onMessageSent : null;
     this.systemReplyRetryScheduleMs = Array.isArray(systemReplyRetryScheduleMs) && systemReplyRetryScheduleMs.length
       ? systemReplyRetryScheduleMs.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value >= 0)
       : [1_500, 2_500, 4_000, 6_000];
@@ -391,8 +393,18 @@ class StreamDelivery {
 
   async sendTextWithRetry(state, payload, { kind }) {
     const initialTarget = state.replyTarget;
+    const recordSent = () => {
+      if (typeof this.onMessageSent === "function") {
+        try {
+          this.onMessageSent(payload.text);
+        } catch {
+          // never break delivery for logging
+        }
+      }
+    };
     try {
       await this.channelAdapter.sendText(payload);
+      recordSent();
       return;
     } catch (error) {
       const retryTarget = this.resolveRetriableReplyTarget(initialTarget, error);
@@ -416,6 +428,7 @@ class StreamDelivery {
           retryPayload.preserveBlock = true;
         }
         await this.channelAdapter.sendText(retryPayload);
+        recordSent();
         state.replyTarget = retryTarget;
         if (state.bindingKey) {
           this.replyTargetByBindingKey.set(state.bindingKey, {
@@ -596,6 +609,10 @@ function collectPendingReplyDeliveries(state, { force }) {
     const sanitizedText = sanitizeReplyText(plainText);
     if (!sanitizedText) {
       continue;
+    }
+    const conflicts = validateDraftAgainstMemory(sanitizedText);
+    if (conflicts.length) {
+      console.warn(`[cyberboss] memory conflict: ${conflicts.map((c) => `${c.reason}:${c.key}`).join("; ")}`);
     }
     pending.push({ itemId, kind: "plain", text: sanitizedText });
   }

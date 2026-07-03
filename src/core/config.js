@@ -70,6 +70,10 @@ function readConfig() {
     claudeDisableVerbose: readBoolEnv("CYBERBOSS_CLAUDE_DISABLE_VERBOSE"),
     claudeExtraArgs: readListEnv("CYBERBOSS_CLAUDE_EXTRA_ARGS"),
     sessionsFile: path.join(stateDir, "sessions.json"),
+    threadStateFile: path.join(stateDir, "thread-state.json"),
+    conversationsDir: path.join(stateDir, "conversations"),
+    conversationServerPort: readIntEnv("CYBERBOSS_CONVERSATION_SERVER_PORT") || 4319,
+    conversationServerHost: readTextEnv("CYBERBOSS_CONVERSATION_SERVER_HOST") || "127.0.0.1",
     startWithCheckin: (mode === "start" && hasArgFlag(argv, "--checkin")) || readBoolEnv("CYBERBOSS_ENABLE_CHECKIN"),
   };
 }
@@ -162,4 +166,9 @@ function resolveLocationServerEnabled({ mode, enabled }) {
   return false;
 }
 
-module.exports = { readConfig };
+function getMemoryDir() {
+  const stateDir = process.env.CYBERBOSS_STATE_DIR || path.join(os.homedir(), ".cyberboss");
+  return path.join(stateDir, "memory");
+}
+
+module.exports = { readConfig, getMemoryDir };
