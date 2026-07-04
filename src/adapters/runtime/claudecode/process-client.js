@@ -299,29 +299,8 @@ class ClaudeCodeProcessClient {
 
   async close() {
     if (!this.child) return;
-    if (this.stdin && !this.stdin.destroyed) {
-      this.stdin.end();
-    }
-    if (this.child && !this.child.killed) {
-      await Promise.race([
-        new Promise((resolve) => setTimeout(resolve, 2000)),
-        new Promise((resolve) => this.child.once("close", resolve)),
-      ]);
-    }
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
-      await Promise.race([
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-        new Promise((resolve) => this.child.once("close", resolve)),
-      ]);
-    }
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGKILL");
-      await Promise.race([
-        new Promise((resolve) => setTimeout(resolve, 1000)),
-        new Promise((resolve) => this.child.once("close", resolve)),
-      ]);
-    }
+    try { if (this.stdin && !this.stdin.destroyed) this.stdin.end(); } catch {}
+    try { this.child.kill("SIGKILL"); } catch {}
     this.alive = false;
     this.child = null;
     this.stdin = null;

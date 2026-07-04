@@ -88,9 +88,9 @@ function createClaudeCodeRuntimeAdapter(config) {
         }
         pendingApprovals.set(mapped.payload.requestId, workspaceRoot);
       }
-      if (mapped?.type === "runtime.turn.failed") {
+      if (mapped?.type === "runtime.turn.failed" || mapped?.type === "runtime.turn.completed") {
         closeWorkspaceClient(workspaceRoot).catch((err) => {
-          console.error(`[claudecode-runtime] failed to close client after turn failure: ${err.message}`);
+          console.error(`[claudecode-runtime] failed to close client after ${mapped.type}: ${err.message}`);
         });
       }
       if (mapped && globalListener) {
