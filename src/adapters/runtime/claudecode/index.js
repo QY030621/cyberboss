@@ -291,17 +291,21 @@ function createClaudeCodeRuntimeAdapter(config) {
       }
       const { client, threadId: activeThreadId } = attached;
       const outboundText = openingTurn ? buildOpeningTurnText(config, text) : text;
-      const outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
+      let outboundThreadId = activeThreadId || threadId || `pending-${Date.now()}`;
       await client.sendUserMessage({ text: outboundText, threadId: outboundThreadId });
-      if (!openingTurn) {
-        const confirmedSessionId = normalizeThreadId(
-          client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_RESUME_SESSION_TIMEOUT_MS })
-        );
-        if (confirmedSessionId !== normalizeThreadId(outboundThreadId)) {
+      // Always wait for Claude to report its real session id — even on first turn
+      const confirmedSessionId = normalizeThreadId(
+        client.sessionId || await client.waitForSessionId({ timeoutMs: CLAUDE_RESUME_SESSION_TIMEOUT_MS })
+      );
+      if (confirmedSessionId) {
+        if (openingTurn) {
+          // First turn: use Claude's real UUID so TurnGateStore never sees a pending ID
+          outboundThreadId = confirmedSessionId;
+        } else if (confirmedSessionId !== normalizeThreadId(outboundThreadId)) {
           await closeWorkspaceClient(workspaceRoot);
           sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
           sessionStore.clearPendingThreadIdForWorkspace(bindingKey, workspaceRoot);
-          throw new Error(`claudecode resumed unexpected session id: ${confirmedSessionId || "(empty)"}`);
+          throw new Error(`claudecode resumed unexpected session id: ${confirmedSessionId}`);
         }
       }
       sessionStore.setThreadIdForWorkspace(
