@@ -13,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const DIGEST_EVERY = 7;
+const DIGEST_EVERY = 20;
 
 class AutoDigest {
   /**
@@ -82,7 +82,9 @@ class AutoDigest {
     const prompt = [
       "🔁 自动记忆提炼 #" + (this._data.digests.length + 1),
       "",
-      "你已经和宝宝聊了 " + turnCount + " 轮了。现在请做一次记忆提炼：",
+      "⚠️ 优先回宝宝的消息。如果她正在跟你说话，先回她——记忆提炼等闲下来再做。",
+      "",
+      "你已经和宝宝聊了 " + turnCount + " 轮了。如果有空，请做一次记忆提炼：",
       "",
       "1. 回顾最近的对话（conversations/ 目录下今天的 JSONL 文件），找出值得长期记住的信息",
       "2. 使用 memory_write 工具写入记忆，分类参考：",
