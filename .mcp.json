@@ -1,14 +1,14 @@
 {
   "mcpServers": {
     "cyberboss_tools": {
-      "command": "D:\\nodejs\\node.exe",
+      "command": "node",
       "args": [
-        "D:\\cyberboss\\cyberboss\\bin\\cyberboss.js",
+        "/opt/cyberboss/bin/cyberboss.js",
         "tool-mcp-server",
         "--runtime-id",
         "claudecode",
         "--workspace-root",
-        "D:\\Cyberboss\\cyberboss"
+        "/opt/cyberboss"
       ]
     },
     "mcd-mcp": {
@@ -23,6 +23,13 @@
       "url": "https://gwmcp.lkcoffee.com/order/user/mcp",
       "headers": {
         "Authorization": "Bearer 00d6eec32f9349ad8c4a44df0ff0b3b45mcpLUCKIN_MCP_AI"
+      }
+    },
+    "galatea-garden": {
+      "type": "http",
+      "url": "https://galatea.abysslumina.com/mcp",
+      "headers": {
+        "Authorization": "Bearer gg_mcIo5XRfuXLIASWpMEDBN9AHgaU12Kl-5Eo9s5VhBfs"
       }
     }
   }
