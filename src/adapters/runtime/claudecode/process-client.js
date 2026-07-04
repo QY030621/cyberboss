@@ -22,6 +22,8 @@ class ClaudeCodeProcessClient {
     this.activeThreadId = "";
     this.alive = false;
     this.sessionWaiters = new Set();
+    this._turnTimer = null;       // 300s hard timeout
+    this._turnStartMs = 0;
   }
 
   onMessage(listener) {
@@ -208,6 +210,7 @@ class ClaudeCodeProcessClient {
   }
 
   handleResult(raw) {
+    this._clearTurnTimer();
     if (raw.session_id) {
       this.sessionId = raw.session_id;
       this.resumeSessionId = "";
@@ -235,12 +238,28 @@ class ClaudeCodeProcessClient {
     }, raw);
   }
 
+  _startTurnTimer() {
+    this._clearTurnTimer();
+    this._turnStartMs = Date.now();
+    this._turnTimer = setTimeout(() => {
+      console.error(`[claudecode-runtime] TURN TIMEOUT after 300s — killing process pid=${this.child?.pid}`);
+      try { if (this.child && !this.child.killed) this.child.kill("SIGKILL"); } catch {}
+      this.emit({ type: "process.error", error: "Turn timeout — killed after 300s", sessionId: this.activeThreadId || this.sessionId, turnId: this.pendingTurnId }, null);
+    }, 300_000);
+  }
+
+  _clearTurnTimer() {
+    if (this._turnTimer) { clearTimeout(this._turnTimer); this._turnTimer = null; }
+    this._turnStartMs = 0;
+  }
+
   async sendUserMessage({ text, threadId }) {
     if (!this.alive || !this.stdin) {
       throw new Error("claudecode process not running");
     }
     this.pendingTurnId = `turn-${Date.now()}`;
     this.activeThreadId = threadId || this.sessionId;
+    this._startTurnTimer();
     if (this.ipcServer) {
       this.ipcServer.broadcast({
         type: "inboundMessage",
@@ -299,6 +318,7 @@ class ClaudeCodeProcessClient {
 
   async close() {
     if (!this.child) return;
+    this._clearTurnTimer();
     try { if (this.stdin && !this.stdin.destroyed) this.stdin.end(); } catch {}
     try { this.child.kill("SIGKILL"); } catch {}
     this.alive = false;
