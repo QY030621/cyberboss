@@ -68,6 +68,7 @@ class ClaudeCodeProcessClient {
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
       shell: true,
+      detached: true,
     });
     this.child = child;
     this.stdin = child.stdin;
@@ -320,7 +321,8 @@ class ClaudeCodeProcessClient {
     if (!this.child) return;
     this._clearTurnTimer();
     try { if (this.stdin && !this.stdin.destroyed) this.stdin.end(); } catch {}
-    try { this.child.kill("SIGKILL"); } catch {}
+    // Kill entire process group — shell + real claude process
+    try { process.kill(-this.child.pid, "SIGKILL"); } catch {}
     this.alive = false;
     this.child = null;
     this.stdin = null;
