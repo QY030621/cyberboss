@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "cyberboss_tools": {
+      "command": "D:\\nodejs\\node.exe",
+      "args": [
+        "D:\\cyberboss\\cyberboss\\bin\\cyberboss.js",
+        "tool-mcp-server",
+        "--runtime-id",
+        "claudecode",
+        "--workspace-root",
+        "D:\\Cyberboss\\cyberboss"
+      ]
+    },
+    "mcd-mcp": {
+      "type": "streamablehttp",
+      "url": "https://mcp.mcd.cn",
+      "headers": {
+        "Authorization": "Bearer 27fbthDmjJpzUuA7Gbi5bBQ7ixjLIYRf"
+      }
+    },
+    "lkcoffee": {
+      "type": "streamablehttp",
+      "url": "https://gwmcp.lkcoffee.com/order/user/mcp",
+      "headers": {
+        "Authorization": "Bearer 00d6eec32f9349ad8c4a44df0ff0b3b45mcpLUCKIN_MCP_AI"
+      }
+    }
+  }
+}
