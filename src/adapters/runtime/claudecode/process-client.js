@@ -45,9 +45,10 @@ class ClaudeCodeProcessClient {
   }
 
   async connect(resumeSessionId = "") {
-    if (this.child) return;
+    if (this.child) { console.log(`[claudecode-lifecycle] connect SKIP — child already exists pid=${this.child.pid}`); return; }
     this.sessionId = "";
     this.resumeSessionId = isValidSessionId(resumeSessionId) ? resumeSessionId : "";
+    console.log(`[claudecode-lifecycle] connect START resumeId=${this.resumeSessionId || "(none)"} workspace=${this.workspaceRoot}`);
     this.activeThreadId = "";
     const args = buildArgs({
       model: this.model,
@@ -73,6 +74,11 @@ class ClaudeCodeProcessClient {
     this.child = child;
     this.stdin = child.stdin;
     this.alive = true;
+    console.log(`[claudecode-lifecycle] SPAWN pid=${child.pid} resumeId=${this.resumeSessionId || "(none)"}`);
+
+    child.stdout.on("end", () => {
+      console.log(`[claudecode-lifecycle] STDOUT END pid=${child.pid}`);
+    });
 
     child.stdout.on("data", (chunk) => {
       this.stdoutBuffer += chunk.toString("utf8");
@@ -81,6 +87,10 @@ class ClaudeCodeProcessClient {
       for (const line of lines) {
         this.handleLine(line.trim());
       }
+    });
+
+    child.stderr.on("end", () => {
+      console.log(`[claudecode-lifecycle] STDERR END pid=${child.pid}`);
     });
 
     child.stderr.on("data", (chunk) => {
@@ -94,6 +104,7 @@ class ClaudeCodeProcessClient {
     });
 
     child.on("error", (err) => {
+      console.log(`[claudecode-lifecycle] PROCESS ERROR pid=${child.pid} msg=${err.message}`);
       this.rejectSessionWaiters(err);
       this.alive = false;
       this.child = null;
@@ -101,7 +112,9 @@ class ClaudeCodeProcessClient {
       this.emit({ type: "process.error", error: err.message, sessionId: this.activeThreadId || this.sessionId, turnId: this.pendingTurnId }, null);
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      const uptime = this._turnStartMs ? `${Date.now() - this._turnStartMs}ms` : "n/a";
+      console.log(`[claudecode-lifecycle] PROCESS CLOSE pid=${child.pid} code=${code} signal=${signal} uptime=${uptime}`);
       this.rejectSessionWaiters(new Error(`claudecode process closed with code ${code ?? "unknown"}`));
       this.alive = false;
       this.child = null;
@@ -212,6 +225,7 @@ class ClaudeCodeProcessClient {
 
   handleResult(raw) {
     this._clearTurnTimer();
+    console.log(`[claudecode-lifecycle] TURN COMPLETED pid=${this.child?.pid} session=${raw.session_id || this.sessionId} result=${String(raw.result||"").slice(0,60)}`);
     if (raw.session_id) {
       this.sessionId = raw.session_id;
       this.resumeSessionId = "";
@@ -318,7 +332,8 @@ class ClaudeCodeProcessClient {
   }
 
   async close() {
-    if (!this.child) return;
+    if (!this.child) { console.log(`[claudecode-lifecycle] CLOSE skip — no child`); return; }
+    console.log(`[claudecode-lifecycle] CLOSE pid=${this.child.pid} session=${this.sessionId} alive=${this.alive}`);
     this._clearTurnTimer();
     try { if (this.stdin && !this.stdin.destroyed) this.stdin.end(); } catch {}
     // Kill entire process group — shell + real claude process

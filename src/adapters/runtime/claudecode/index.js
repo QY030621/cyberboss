@@ -59,6 +59,9 @@ function createClaudeCodeRuntimeAdapter(config) {
       workspaceRoot,
     });
     client.onMessage((event, raw) => {
+      if (event.type !== "session.id" && event.type !== "context.updated" && event.type !== "thinking") {
+        console.log(`[claudecode-lifecycle] EVENT type=${event.type} session=${event.sessionId || raw?.session_id || "?"}`);
+      }
       if (event.type === "session.id") {
         for (const binding of sessionStore.listBindings()) {
           if (binding.activeWorkspaceRoot === workspaceRoot) {
@@ -89,6 +92,7 @@ function createClaudeCodeRuntimeAdapter(config) {
         pendingApprovals.set(mapped.payload.requestId, workspaceRoot);
       }
       if (mapped?.type === "runtime.turn.failed") {
+        console.log(`[claudecode-lifecycle] TURN-FAILED on-message — closing workspace ${workspaceRoot}`);
         closeWorkspaceClient(workspaceRoot).catch((err) => {
           console.error(`[claudecode-runtime] failed to close client after turn failure: ${err.message}`);
         });
@@ -109,27 +113,41 @@ function createClaudeCodeRuntimeAdapter(config) {
     }
 
     const existingClient = clientsByWorkspace.get(normalizedWorkspaceRoot);
+    console.log(`[claudecode-lifecycle] ATTACH ws=${normalizedWorkspaceRoot} threadId=${normalizedThreadId || "(none)"} existingAlive=${Boolean(existingClient?.alive)} existingSession=${existingClient?.sessionId || "(none)"}`);
+
     if (normalizedThreadId && clientMatchesThread(existingClient, normalizedThreadId)) {
+      console.log(`[claudecode-lifecycle] ATTACH REUSE — client matches thread`);
       return { client: existingClient, threadId: normalizedThreadId };
     }
 
+    console.log(`[claudecode-lifecycle] ATTACH NO-MATCH — existingSession=${existingClient?.sessionId||"(none)"} wanted=${normalizedThreadId||"(none)"} existingAlive=${Boolean(existingClient?.alive)}`);
+
     if (!normalizedThreadId && existingClient?.alive) {
+      console.log(`[claudecode-lifecycle] ATTACH CLOSE-OLD — no threadId, closing alive client`);
       await closeWorkspaceClient(normalizedWorkspaceRoot);
     }
 
     const client = ensureClient(normalizedWorkspaceRoot);
     if (!client.alive || (normalizedThreadId && !clientMatchesThread(client, normalizedThreadId))) {
       if (client.alive && normalizedThreadId && !clientMatchesThread(client, normalizedThreadId)) {
+        console.log(`[claudecode-lifecycle] ATTACH RECONNECT — thread mismatch after ensureClient, closing`);
         await closeWorkspaceClient(normalizedWorkspaceRoot);
       }
       const freshClient = ensureClient(normalizedWorkspaceRoot);
-      await freshClient.connect(normalizedThreadId);
+      const needConnect = !freshClient.alive || (normalizedThreadId && !clientMatchesThread(freshClient, normalizedThreadId));
+      if (needConnect) {
+        console.log(`[claudecode-lifecycle] ATTACH FRESH — calling connect with resumeId=${normalizedThreadId || "(none)"}`);
+        await freshClient.connect(normalizedThreadId);
+      } else {
+        console.log(`[claudecode-lifecycle] ATTACH FRESH — ensureClient returned alive matching client, no connect needed`);
+      }
       if (normalizedThreadId) {
         return { client: freshClient, threadId: normalizedThreadId };
       }
       return { client: freshClient, threadId: freshClient.sessionId || normalizedThreadId };
     }
 
+    console.log(`[claudecode-lifecycle] ATTACH REUSE — ensureClient returned alive client`);
     return { client, threadId: client.sessionId || normalizedThreadId };
   }
   async function closeWorkspaceClient(workspaceRoot) {
@@ -138,6 +156,7 @@ function createClaudeCodeRuntimeAdapter(config) {
       return;
     }
     const client = clientsByWorkspace.get(normalizedWorkspaceRoot);
+    console.log(`[claudecode-lifecycle] CLOSE-WORKSPACE ws=${normalizedWorkspaceRoot} hasClient=${Boolean(client)} clientAlive=${Boolean(client?.alive)}`);
     if (!client) {
       return;
     }
@@ -256,6 +275,7 @@ function createClaudeCodeRuntimeAdapter(config) {
         sessionStore.clearThreadIdForWorkspace(bindingKey, workspaceRoot);
       }
       let openingTurn = !threadId;
+      console.log(`[claudecode-lifecycle] SEND-TURN ws=${workspaceRoot} threadId=${threadId || "(none)"} openingTurn=${openingTurn} text=${String(text||"").slice(0,40)}`);
       let attached;
       try {
         attached = await attachClientToThread(workspaceRoot, threadId);
