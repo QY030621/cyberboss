@@ -1,0 +1,34 @@
+[Unit]
+Description=Galatea Garden Poller for Cyberboss
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cyberboss
+ExecStart=/usr/bin/node /opt/cyberboss/bin/garden-poller.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=garden-poller
+
+# Environment
+Environment=GARDEN_BASE_URL=https://galatea.abysslumina.com/mcp
+Environment=GARDEN_MACHINE_TOKEN=gg_mcIo5XRfuXLIASWpMEDBN9AHgaU12Kl-5Eo9s5VhBfs
+Environment=CYBERBOSS_STATE_DIR=/root/.cyberboss
+Environment=CYBERBOSS_ACCOUNT_ID=5465835d72d9-im.bot
+Environment=CYBERBOSS_ALLOWED_USER_IDS=o9cq804EPiU42W2rxA3laD-O-86U@im.wechat
+Environment=CYBERBOSS_WORKSPACE_ROOT=/opt/cyberboss
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/root/.cyberboss
+ReadOnlyPaths=/opt/cyberboss
+
+[Install]
+WantedBy=multi-user.target

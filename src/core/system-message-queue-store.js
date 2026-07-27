@@ -90,14 +90,23 @@ function normalizeSystemMessage(message) {
     return null;
   }
 
+  const type = normalizeMessageType(message.type);
+
   return {
     id,
     accountId,
     senderId,
     workspaceRoot,
     text,
+    type,
     createdAt: createdAt || new Date().toISOString(),
   };
+}
+
+function normalizeMessageType(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return "checkin";
+  return normalized;
 }
 
 function normalizeIsoTime(value) {
